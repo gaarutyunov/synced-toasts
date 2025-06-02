@@ -2,7 +2,9 @@
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {Toaster} from "@/components/ui/sonner";
-import {type AnyDocumentId, useDocument} from "@automerge/react";
+import {type AnyDocumentId, type DocHandleChangePayload, useDocHandle} from "@automerge/react";
+import {useCallback, useEffect, useState} from "react";
+import type {ChangeFn, ChangeOptions, Doc} from "@automerge/automerge";
 
 export interface Toast {
     id: number | string;
@@ -18,8 +20,110 @@ export interface ToastList {
     toasts: Toast[];
 }
 
+export type UseDocumentReturn<T> = [
+    Doc<T>,
+    (changeFn: ChangeFn<T>, options?: ChangeOptions<T>) => void
+]
+
+interface UseDocumentSuspendingParams {
+    suspense: true
+}
+interface UseDocumentSynchronousParams {
+    suspense: false
+}
+
+type UseDocumentParams =
+    | UseDocumentSuspendingParams
+    | UseDocumentSynchronousParams
+
+function useDocument<T>(
+    id: AnyDocumentId | undefined,
+    params: UseDocumentParams = { suspense: false },
+    onChangeCallback: ((e: DocHandleChangePayload<T>) => void) | undefined = undefined
+): UseDocumentReturn<T> | [undefined, () => void] {
+    // @ts-expect-error -- typescript doesn't realize we're discriminating these types the same way in both functions
+    const handle = useDocHandle<T>(id, params)
+    // Initialize with current doc state
+    const [doc, setDoc] = useState<Doc<T> | undefined>(() => handle?.doc())
+    const [deleteError, setDeleteError] = useState<Error>()
+
+    // Reinitialize doc when handle changes
+    useEffect(() => {
+        setDoc(handle?.doc())
+    }, [handle])
+
+    useEffect(() => {
+        if (!handle) {
+            return
+        }
+        const onChange = (e: DocHandleChangePayload<T>) => {
+            const d = handle.doc()
+            setDoc(d)
+            if (onChangeCallback) {
+                onChangeCallback(e)
+            }
+        }
+        const onDelete = () => {
+            setDeleteError(new Error(`Document ${id} was deleted`))
+        }
+
+        handle.on("change", onChange)
+        handle.on("delete", onDelete)
+
+        return () => {
+            handle.removeListener("change", onChange)
+            handle.removeListener("delete", onDelete)
+        }
+    }, [handle, id, onChangeCallback])
+
+    const changeDoc = useCallback(
+        (changeFn: ChangeFn<T>, options?: ChangeOptions<T>) => {
+            handle!.change(changeFn, options)
+        },
+        [handle]
+    )
+
+    if (deleteError) {
+        throw deleteError
+    }
+
+    if (!doc) {
+        return [undefined, () => {}]
+    }
+
+    return [doc, changeDoc]
+}
+
+function showToast(t: Toast, close: () => void) {
+    toast(t.title, {
+        id: t.id,
+        description: t.description,
+        action: {
+            label: t.action?.label,
+            onClick: close,
+        },
+        duration: 5000,
+    })
+}
+
 function App({docUrl}: { docUrl?: AnyDocumentId }) {
-    const [doc, changeDoc] = useDocument<ToastList>(docUrl);
+    const [, changeDoc] = useDocument<ToastList>(docUrl, { suspense: false }, (change) => {
+        console.log(change)
+        const insertA = change.patches.find(v => v.path[0] === "toasts" && v.action === "insert")
+        const deleteA = change.patches.find(v => v.path[0] === "toasts" && v.action === "del")
+        const closeAll = change.patches.find(v => v.path.length === 1 && v.path[0] === "toasts")
+        if (insertA) {
+            showToast(change.doc.toasts[Number(insertA.path[1])], () => {
+                change.handle.change((toasts) => {
+                    toasts.toasts.splice(Number(insertA.path[1]), 1)
+                })
+            })
+        } else if (deleteA) {
+            toast.dismiss(change.patchInfo.before.toasts[Number(deleteA.path[1])].id);
+        } else if (closeAll) {
+            toast.dismiss()
+        }
+    });
 
     return (
         <>
@@ -33,37 +137,24 @@ function App({docUrl}: { docUrl?: AnyDocumentId }) {
                             title: "Event Created",
                             description: n.toDateString(),
                             action: {
-                                label: "Read",
+                                label: "Close",
                                 onClickMessage: "Opened toast #"+n.getTime(),
                             }
                         }
                         changeDoc((draft) => {
-                            draft.toasts.push(newToast);
-                        })
-                        toast(newToast.title, {
-                            description: newToast.description,
-                            action: {
-                                label: newToast.action?.label,
-                                onClick: () => {
-                                    console.log(newToast.action?.onClickMessage);
-                                }
-                            },
-                            duration: 5000,
+                            draft.toasts.push(newToast)
                         })
                     }
                 }
             >
                 Show Toast
             </Button>
+            <Button variant="destructive" onClick={() => {
+                changeDoc((draft) => {
+                    draft.toasts = []
+                })
+            }}>Close All</Button>
             <Toaster />
-            <div className="mt-4">
-                {doc?.toasts.map((toast) => (
-                    <div key={toast.id} className="p-2 border rounded mb-2">
-                        <h3 className="font-bold">{toast.title}</h3>
-                        <p>{toast.description}</p>
-                    </div>
-                ))}
-            </div>
         </>
     )
 }

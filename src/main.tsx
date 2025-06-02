@@ -5,14 +5,14 @@ import App, {type ToastList} from './App.tsx'
 import {
     Repo,
     BroadcastChannelNetworkAdapter,
-    IndexedDBStorageAdapter,
+    // IndexedDBStorageAdapter, // Uncomment this line to use IndexedDB for storage
     RepoContext, isValidAutomergeUrl,
 } from "@automerge/react";
 
 // Now we can get on with our lives
 
 const repo = new Repo({
-    storage: new IndexedDBStorageAdapter(),
+    // storage: new IndexedDBStorageAdapter(), // Uncomment this line to use IndexedDB for storage
     network: [new BroadcastChannelNetworkAdapter()],
 })
 
